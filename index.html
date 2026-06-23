@@ -1,0 +1,138 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Serverless Encrypted Pad</title>
+    <style>
+        body { font-family: sans-serif; margin: 20px; background: #f4f4f9; color: #333; }
+        .container { max-width: 800px; margin: 0 auto; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+        textarea { width: 100%; height: 300px; margin: 10px 0; box-sizing: border-box; padding: 10px; font-size: 16px; border: 1px solid #ccc; border-radius: 4px; }
+        input[type="password"] { padding: 10px; width: 200px; margin-right: 10px; border: 1px solid #ccc; border-radius: 4px; }
+        button { padding: 10px 15px; background: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; }
+        button:hover { background: #0056b3; }
+        .url-box { margin-top: 15px; padding: 10px; background: #e9ecef; border-left: 4px solid #007bff; word-break: break-all; display: none; }
+    </style>
+</head>
+<body>
+<div class="container">
+    <h2>🔒 Serverless Encrypted Pad</h2>
+    <p>Notes are encrypted in your browser. Nothing is ever sent to a server.</p>
+    
+    <input type="password" id="password" placeholder="Enter secret password">
+    <button id="actionBtn" onclick="handleAction()">Lock & Generate Link</button>
+    
+    <textarea id="note" placeholder="Type your secret note here..."></textarea>
+    
+    <div id="urlContainer" class="url-box">
+        <strong>Your Secure Note Link (Save/Bookmark this!):</strong><br>
+        <a id="noteUrl" href="#" target="_blank"></a>
+    </div>
+</div>
+
+<script>
+    // Derive a cryptographic key from a password using PBKDF2
+    async function deriveKey(password, salt) {
+        const encoder = new TextEncoder();
+        const baseKey = await crypto.subtle.importKey(
+            "raw", encoder.encode(password), "PBKDF2", false, ["deriveKey"]
+        );
+        return crypto.subtle.deriveKey(
+            { name: "PBKDF2", salt: salt, iterations: 100000, hash: "SHA-256" },
+            baseKey, { name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]
+        );
+    }
+
+    // Encrypt text and pack it into a URL-safe string
+    async function encryptData(text, password) {
+        const encoder = new TextEncoder();
+        const salt = crypto.getRandomValues(new Uint8Array(16));
+        const iv = crypto.getRandomValues(new Uint8Array(12));
+        const key = await deriveKey(password, salt);
+        
+        const encrypted = await crypto.subtle.encrypt(
+            { name: "AES-GCM", iv: iv }, key, encoder.encode(text)
+        );
+
+        // Combine Salt, IV, and Ciphertext into one payload
+        const payload = new Uint8Array(salt.length + iv.length + encrypted.byteLength);
+        payload.set(salt, 0);
+        payload.set(iv, salt.length);
+        payload.set(new Uint8Array(encrypted), salt.length + iv.length);
+
+        // Convert to URL-friendly Base64
+        return btoa(String.fromCharCode(...payload)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    }
+
+    // Decrypt data from the URL-safe string
+    async function decryptData(encodedPayload, password) {
+        try {
+            // Restore standard Base64 formatting
+            let base64 = encodedPayload.replace(/-/g, '+').replace(/_/g, '/');
+            while (base64.length % 4) base64 += '=';
+            
+            const binaryStr = atob(base64);
+            const payload = new Uint8Array(binaryStr.length);
+            for (let i = 0; i < binaryStr.length; i++) payload[i] = binaryStr.charCodeAt(i);
+
+            const salt = payload.slice(0, 16);
+            const iv = payload.slice(16, 28);
+            const ciphertext = payload.slice(28);
+
+            const key = await deriveKey(password, salt);
+            const decrypted = await crypto.subtle.decrypt(
+                { name: "AES-GCM", iv: iv }, key, ciphertext
+            );
+
+            return new TextDecoder().decode(decrypted);
+        } catch (e) {
+            alert("Incorrect password or corrupted link.");
+            return null;
+        }
+    }
+
+    // Determine mode based on URL hash presence
+    const hash = window.location.hash.substring(1);
+    if (hash) {
+        document.getElementById("actionBtn").innerText = "Decrypt Note";
+        document.getElementById("note").placeholder = "This note is locked. Enter password above to decrypt.";
+        document.getElementById("note").disabled = true;
+    }
+
+    async function handleAction() {
+        const password = document.getElementById("password").value;
+        const textarea = document.getElementById("note");
+        
+        if (!password) {
+            alert("Please enter a password.");
+            return;
+        }
+
+        if (hash) {
+            // Decrypt Mode
+            const decryptedText = await decryptData(hash, password);
+            if (decryptedText !== null) {
+                textarea.value = decryptedText;
+                textarea.disabled = false;
+            }
+        } else {
+            // Encrypt Mode
+            const text = textarea.value;
+            if (!text) {
+                alert("Please write a note first.");
+                return;
+            }
+            const encryptedStr = await encryptData(text, password);
+            const finalUrl = `${window.location.origin}${window.location.pathname}#${encryptedStr}`;
+            
+            const urlContainer = document.getElementById("urlContainer");
+            const noteUrl = document.getElementById("noteUrl");
+            noteUrl.href = finalUrl;
+            noteUrl.innerText = finalUrl;
+            urlContainer.style.display = "block";
+        }
+    }
+</script>
+</body>
+</html>
