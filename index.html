@@ -1,78 +1,85 @@
 
+
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Serverless Encrypted Pad</title>
+    <title>CodedPad Clone</title>
     <style>
         body { font-family: sans-serif; margin: 20px; background: #f4f4f9; color: #333; }
         .container { max-width: 800px; margin: 0 auto; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
-        textarea { width: 100%; height: 300px; margin: 10px 0; box-sizing: border-box; padding: 10px; font-size: 16px; border: 1px solid #ccc; border-radius: 4px; }
-        input[type="password"] { padding: 10px; width: 200px; margin-right: 10px; border: 1px solid #ccc; border-radius: 4px; }
-        button { padding: 10px 15px; background: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; }
-        button:hover { background: #0056b3; }
-        .url-box { margin-top: 15px; padding: 10px; background: #e9ecef; border-left: 4px solid #007bff; word-break: break-all; display: none; }
+        textarea { width: 100%; height: 350px; margin: 10px 0; box-sizing: border-box; padding: 10px; font-size: 16px; border: 1px solid #ccc; border-radius: 4px; font-family: monospace; }
+        input { padding: 10px; margin-right: 10px; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; }
+        .setup-bar { display: flex; margin-bottom: 15px; flex-wrap: wrap; gap: 10px; }
+        button { padding: 10px 15px; background: #28a745; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; }
+        button.save { background: #007bff; }
+        button:hover { opacity: 0.9; }
+        .status { font-weight: bold; color: #666; margin-top: 5px; }
     </style>
 </head>
 <body>
 <div class="container">
-    <h2>🔒 Serverless Encrypted Pad</h2>
-    <p>Notes are encrypted in your browser. Nothing is ever sent to a server.</p>
+    <h2>📝 True Encrypted CodedPad Clone</h2>
+    <p>Choose a unique Pad URL Name and a Password. Anyone with this link and password can read and edit.</p>
     
-    <input type="password" id="password" placeholder="Enter secret password">
-    <button id="actionBtn" onclick="handleAction()">Lock & Generate Link</button>
-    
-    <textarea id="note" placeholder="Type your secret note here..."></textarea>
-    
-    <div id="urlContainer" class="url-box">
-        <strong>Your Secure Note Link (Save/Bookmark this!):</strong><br>
-        <a id="noteUrl" href="#" target="_blank"></a>
+    <div class="setup-bar">
+        <input type="text" id="padName" placeholder="e.g. secret-meeting-room">
+        <input type="password" id="password" placeholder="Enter password">
+        <button id="loadBtn" onclick="loadPad()">Go to / Load Pad</button>
+        <button id="saveBtn" class="save" onclick="savePad()" disabled>Save Changes</button>
     </div>
+
+    <div id="status" class="status">Status: Waiting for you to load or create a pad...</div>
+    <textarea id="note" placeholder="Your note content will appear here after loading..." disabled></textarea>
 </div>
 
 <script>
-    // Derive a cryptographic key from a password using PBKDF2
+    // --- SUPABASE CONFIGURATION ---
+    const SUPABASE_URL = "YOUR_SUPABASE_URL"; 
+    const SUPABASE_KEY = "YOUR_SUPABASE_ANON_KEY"; 
+
+    let currentPadId = "";
+
+    // Parse existing pad ID from URL hash if present on load (e.g. site.html#my-pad)
+    window.addEventListener('DOMContentLoaded', () => {
+        const hashVal = window.location.hash.substring(1);
+        if (hashVal) {
+            document.getElementById("padName").value = hashVal;
+            document.getElementById("status").innerText = "Status: Pad linked. Enter password and click 'Load Pad'.";
+        }
+    });
+
+    // Helper: Crypto Key Derivation
     async function deriveKey(password, salt) {
         const encoder = new TextEncoder();
-        const baseKey = await crypto.subtle.importKey(
-            "raw", encoder.encode(password), "PBKDF2", false, ["deriveKey"]
-        );
+        const baseKey = await crypto.subtle.importKey("raw", encoder.encode(password), "PBKDF2", false, ["deriveKey"]);
         return crypto.subtle.deriveKey(
             { name: "PBKDF2", salt: salt, iterations: 100000, hash: "SHA-256" },
             baseKey, { name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]
         );
     }
 
-    // Encrypt text and pack it into a URL-safe string
-    async function encryptData(text, password) {
+    // Helper: Encrypt Text
+    async function encryptText(text, password) {
         const encoder = new TextEncoder();
         const salt = crypto.getRandomValues(new Uint8Array(16));
         const iv = crypto.getRandomValues(new Uint8Array(12));
         const key = await deriveKey(password, salt);
-        
-        const encrypted = await crypto.subtle.encrypt(
-            { name: "AES-GCM", iv: iv }, key, encoder.encode(text)
-        );
+        const encrypted = await crypto.subtle.encrypt({ name: "AES-GCM", iv: iv }, key, encoder.encode(text));
 
-        // Combine Salt, IV, and Ciphertext into one payload
         const payload = new Uint8Array(salt.length + iv.length + encrypted.byteLength);
         payload.set(salt, 0);
         payload.set(iv, salt.length);
         payload.set(new Uint8Array(encrypted), salt.length + iv.length);
-
-        // Convert to URL-friendly Base64
-        return btoa(String.fromCharCode(...payload)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+        return btoa(String.fromCharCode(...payload));
     }
 
-    // Decrypt data from the URL-safe string
-    async function decryptData(encodedPayload, password) {
+    // Helper: Decrypt Text
+    async function decryptText(base64Payload, password) {
         try {
-            // Restore standard Base64 formatting
-            let base64 = encodedPayload.replace(/-/g, '+').replace(/_/g, '/');
-            while (base64.length % 4) base64 += '=';
-            
-            const binaryStr = atob(base64);
+            const binaryStr = atob(base64Payload);
             const payload = new Uint8Array(binaryStr.length);
             for (let i = 0; i < binaryStr.length; i++) payload[i] = binaryStr.charCodeAt(i);
 
@@ -81,56 +88,78 @@
             const ciphertext = payload.slice(28);
 
             const key = await deriveKey(password, salt);
-            const decrypted = await crypto.subtle.decrypt(
-                { name: "AES-GCM", iv: iv }, key, ciphertext
-            );
-
+            const decrypted = await crypto.subtle.decrypt({ name: "AES-GCM", iv: iv }, key, ciphertext);
             return new TextDecoder().decode(decrypted);
         } catch (e) {
-            alert("Incorrect password or corrupted link.");
-            return null;
+            return null; // Decryption failed
         }
     }
 
-    // Determine mode based on URL hash presence
-    const hash = window.location.hash.substring(1);
-    if (hash) {
-        document.getElementById("actionBtn").innerText = "Decrypt Note";
-        document.getElementById("note").placeholder = "This note is locked. Enter password above to decrypt.";
-        document.getElementById("note").disabled = true;
-    }
-
-    async function handleAction() {
+    // Database Action: Fetch & Decrypt
+    async function loadPad() {
+        const padName = document.getElementById("padName").value.trim().toLowerCase().replace(/[^a-z0-9-_]/g, '');
         const password = document.getElementById("password").value;
-        const textarea = document.getElementById("note");
-        
-        if (!password) {
-            alert("Please enter a password.");
+
+        if (!padName || !password) {
+            alert("Please enter both a Pad Name and a Password.");
             return;
         }
 
-        if (hash) {
-            // Decrypt Mode
-            const decryptedText = await decryptData(hash, password);
-            if (decryptedText !== null) {
-                textarea.value = decryptedText;
-                textarea.disabled = false;
-            }
+        currentPadId = padName;
+        window.location.hash = currentPadId; // Sync to browser URL address
+        document.getElementById("status").innerText = "Status: Fetching from database...";
+
+        const response = await fetch(`${SUPABASE_URL}/rest/v1/notes?pad_id=eq.${currentPadId}&select=*`, {
+            headers: { "apikey": SUPABASE_KEY, "Authorization": `Bearer ${SUPABASE_KEY}` }
+        });
+        const data = await response.json();
+
+        const textarea = document.getElementById("note");
+        textarea.disabled = false;
+        document.getElementById("saveBtn").disabled = false;
+
+        if (data.length === 0) {
+            textarea.value = "";
+            document.getElementById("status").innerText = `Status: Pad "${currentPadId}" is brand new! Type below and click Save.`;
         } else {
-            // Encrypt Mode
-            const text = textarea.value;
-            if (!text) {
-                alert("Please write a note first.");
-                return;
+            const decrypted = await decryptText(data[0].encrypted_data, password);
+            if (decrypted === null) {
+                textarea.value = "";
+                textarea.disabled = true;
+                document.getElementById("saveBtn").disabled = true;
+                document.getElementById("status").innerText = "Status: ❌ Error: Incorrect password.";
+            } else {
+                textarea.value = decrypted;
+                document.getElementById("status").innerText = `Status: Successfully decrypted "${currentPadId}". Ready to edit.`;
             }
-            const encryptedStr = await encryptData(text, password);
-            const finalUrl = `${window.location.origin}${window.location.pathname}#${encryptedStr}`;
-            
-            const urlContainer = document.getElementById("urlContainer");
-            const noteUrl = document.getElementById("noteUrl");
-            noteUrl.href = finalUrl;
-            noteUrl.innerText = finalUrl;
-            urlContainer.style.display = "block";
+        }
+    }
+
+    // Database Action: Encrypt & Upsert (Save)
+    async function savePad() {
+        const password = document.getElementById("password").value;
+        const text = document.getElementById("note").value;
+
+        if (!currentPadId || !password) return;
+        document.getElementById("status").innerText = "Status: Encrypting and saving...";
+
+        const encryptedString = await encryptText(text, password);
+
+        const response = await fetch(`${SUPABASE_URL}/rest/v1/notes`, {
+            method: "POST",
+            headers: {
+                "apikey": SUPABASE_KEY,
+                "Authorization": `Bearer ${SUPABASE_KEY}`,
+                "Content-Type": "application/json",
+                "Prefer": "resolution=merge" // Tells Supabase to overwrite if pad_id exists
+            },
+            body: JSON.stringify({ pad_id: currentPadId, encrypted_data: encryptedString, updated_at: new Date().toISOString() })
+        });
+
+        if (response.ok) {
+            document.getElementById("status").innerText = `Status: Saved! Share this URL: ${window.location.origin}${window.location.pathname}#${currentPadId}`;
+        } else {
+            document.getElementById("status").innerText = "Status: ❌ Database error saving file.";
         }
     }
 </script>
